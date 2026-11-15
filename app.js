@@ -66,6 +66,7 @@ let fotosCache = {};      // fotos já baixadas, para não baixar de novo
 let avisoTimer = null;
 let travaTela = null;     // "tela sempre acesa" do modo compras
 let instalarEvento = null;
+let atalho = lerAtalho();
 let compartilhado = lerCompartilhado();
 
 // ---------- 3. FUNÇÕES DE APOIO ----------
@@ -194,6 +195,13 @@ function ic(nome, tam = 20, cor = "currentColor", esp = 2) {
 const LOGO = '<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4 10-10"/><circle cx="18.5" cy="17.5" r="1.6"/><circle cx="15" cy="20.5" r="1"/></svg>';
 const GOOGLE = '<svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
 
+// Atalhos do ícone (segurar o dedo no ícone do Dory): falar, compra, pendencia
+function lerAtalho() {
+  const a = new URLSearchParams(location.search).get("atalho");
+  if (a) history.replaceState(null, "", location.pathname);
+  return a;
+}
+
 // Texto recebido pelo "Compartilhar" do celular (ex.: do WhatsApp)
 function lerCompartilhado() {
   const p = new URLSearchParams(location.search);
@@ -211,7 +219,8 @@ function separarItens(texto) {
     if (l.includes(":")) { const depois = l.slice(l.lastIndexOf(":") + 1).trim(); if (depois) l = depois; else return; }
     l.split(/[,;]|\s+e\s+|\s+mais\s+/i).forEach(parte => {
       let t = parte.replace(/^[\s\-•*·–]+/, "").replace(/^\d+[.)]\s+/, "").replace(/[.!]+$/, "").trim();
-      t = t.replace(/^(comprar|compra|preciso de|precisa de|pegar)\s+/i, "");
+      t = t.replace(/^(me\s+)?(lembrar\s+de|lembra\s+de|adicionar|adiciona|anotar|anota|colocar|coloca|comprar|compra|preciso\s+de|precisa\s+de|pegar)\s+/i, "");
+      t = t.replace(/\s+(na|pra|para\s+a)\s+lista(\s+de\s+compras)?$/i, "").replace(/\s+nas\s+pend[eê]ncias$/i, "").trim();
       if (t && t.length <= 80) itens.push(maiuscula(t));
     });
   });
@@ -293,7 +302,13 @@ function iniciarEscutas() {
 }
 
 function abrirCompartilhado() {
-  if (!compartilhado || !S.itensProntos || !S.categoriasProntas) return;
+  if (!S.itensProntos || !S.categoriasProntas) return;
+  if (atalho) {
+    const a = atalho; atalho = null;
+    if (a === "falar") falarPeloAtalho();
+    if (a === "compra" || a === "pendencia") { S.aba = a === "compra" ? "compras" : "pendencias"; gravarLocal("aba", S.aba); desenharTela(); abrirForm(a); }
+  }
+  if (!compartilhado) return;
   const texto = compartilhado; compartilhado = null;
   abrirImportar(texto, "compartilhado");
 }
@@ -487,13 +502,13 @@ function preencherMiniaturas() {
 }
 
 // Microfone: transforma fala em texto (recurso do Chrome)
-function ouvir(aoTerminar) {
+function ouvir(aoTerminar, aoFalhar) {
   const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Rec) { mostrarAviso("Este navegador não reconhece fala. Use o Chrome."); return; }
   const r = new Rec();
   r.lang = "pt-BR"; r.interimResults = true; r.maxAlternatives = 1;
   const el = document.getElementById("ouvindo");
-  let final = "";
+  let final = "", falhou = false;
   el.innerHTML = `<div class="ouvindo" role="dialog" aria-label="Ouvindo">
     <div class="onda">${ic("mic", 36, "#fff")}</div>
     <h2 style="font-size:20px">Pode falar…</h2>
@@ -509,18 +524,41 @@ function ouvir(aoTerminar) {
   };
   r.onerror = ev => {
     el.innerHTML = "";
+    if (aoFalhar && (ev.error === "not-allowed" || ev.error === "service-not-allowed")) { final = ""; falhou = true; aoFalhar(); return; }
     if (ev.error === "not-allowed") mostrarAviso("Permita o uso do microfone para o Dory nas configurações do Chrome.");
     else if (ev.error === "network") mostrarAviso("Para falar, o celular precisa estar com internet.");
     else if (ev.error !== "no-speech" && ev.error !== "aborted") mostrarAviso("Não consegui ouvir. Tente de novo.");
   };
-  r.onend = () => { el.innerHTML = ""; if (final.trim()) aoTerminar(final.trim()); };
-  try { r.start(); } catch (e) { el.innerHTML = ""; }
+  r.onend = () => { if (falhou) return; el.innerHTML = ""; if (final.trim()) aoTerminar(final.trim()); };
+  try { r.start(); } catch (e) { el.innerHTML = ""; if (aoFalhar) aoFalhar(); }
+}
+
+// Atalho "Adicionar falando": tenta ligar o microfone direto.
+// Se o celular exigir um toque antes, mostra um botão grande "Toque para falar".
+function falarPeloAtalho() {
+  ouvir(texto => abrirImportar(texto, "fala"), mostrarBotaoFalar);
+}
+function mostrarBotaoFalar() {
+  document.getElementById("ouvindo").innerHTML = `<div class="ouvindo" role="dialog" aria-label="Falar">
+    <button class="onda" style="border:none;animation:none" data-acao="falarAgora" aria-label="Toque para falar">${ic("mic", 36, "#fff")}</button>
+    <h2 style="font-size:20px">Toque no microfone para falar</h2>
+    <p>Se o celular perguntar, toque em <b>Permitir</b> para o Dory usar o microfone.</p>
+    <button class="btn-secundario" data-acao="fecharOuvir">Cancelar</button></div>`;
+}
+
+// Fala: decide se vai para Compras ou Pendências pelas palavras usadas
+function adivinharDestino(texto, itens) {
+  const t = normalizar(texto);
+  if (/\b(comprar|compra|compras|mercado|farmacia)\b/.test(t)) return "compra";
+  if (/\b(lembrar|lembra|lembrete|pendencia|pendencias|fazer|arrumar|consertar|trocar|pagar|ligar|marcar|levar|limpar|lavar|buscar)\b/.test(t)) return "pendencia";
+  if (itens.some(i => S.sugestoes.some(s => normalizar(s.nome) === normalizar(i)))) return "compra";
+  return S.aba === "compras" ? "compra" : "pendencia";
 }
 
 // Importar vários itens de uma vez (fala ou "Compartilhar" do WhatsApp)
 function abrirImportar(texto, origem) {
   const itens = separarItens(texto);
-  const destino = origem === "fala" ? (S.aba === "compras" ? "compra" : "pendencia") : "compra";
+  const destino = origem === "fala" ? adivinharDestino(texto, itens) : "compra";
   const cats = categoriasOrdenadas();
   S.importar = {
     origem, texto, destino,
@@ -1114,6 +1152,8 @@ const acoes = {
     if (a._depois) a._depois = null;
   },
   falar: () => ouvir(texto => abrirImportar(texto, "fala")),
+  falarAgora: () => { document.getElementById("ouvindo").innerHTML = ""; ouvir(texto => abrirImportar(texto, "fala")); },
+  fecharOuvir: () => { document.getElementById("ouvindo").innerHTML = ""; },
   pararOuvir: () => { document.getElementById("ouvindo")._rec?.stop(); },
   limparComprados: () => {
     const ids = S.itens.filter(i => i.tipo === "compra" && i.feito).map(i => i.id);
