@@ -94,6 +94,15 @@ function ddmm(iso) { const [, m, d] = iso.split("-"); return `${d}/${m}`; }
 const DIAS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
 const DIAS_CURTO = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+// "2026-07" -> "julho/2026"; "2026-07-15" -> "15/07/2026"
+function textoUltimaVez(u) {
+  if (!u) return "";
+  const [a, m, d] = u.split("-");
+  return d ? `${d}/${m}/${a}` : `${MESES[Number(m) - 1]}/${a}`;
+}
+// dd/mm, ou dd/mm/aaaa quando é de outro ano
+function dataCurta(iso) { return iso.slice(0, 4) === hojeISO().slice(0, 4) ? ddmm(iso) : `${ddmm(iso)}/${iso.slice(0, 4)}`; }
+function mmaaaa(iso) { const [a, m] = iso.split("-"); return `${m}/${a}`; }
 function dataExtensa() { const d = new Date(); return `${maiuscula(DIAS[d.getDay()])}, ${d.getDate()} de ${MESES[d.getMonth()]}`; }
 function somarMeses(data, n, diaDesejado) {
   const r = new Date(data.getFullYear(), data.getMonth() + n, 1);
@@ -356,11 +365,15 @@ function alternarFeito(id) {
   if (i.tipo === "pendencia" && marcar && i.repetir && i.repetir.tipo !== "nao") {
     proximaId = novoId("itens");
     const { id: _x, feito, feitoEm, feitoPor, temFoto, ...resto } = i;
-    const prox = { ...resto, feito: false, criadoEm: agora(), dataLimite: proximaData(i.repetir, i.dataLimite), temFoto: false };
+    // "Todo dia" e "A cada X meses" contam a partir de hoje (dia em que foi feita);
+    // "Toda semana" e "Todo mês no dia X" seguem o calendário
+    const contaDeHoje = i.repetir.tipo === "dia" || i.repetir.tipo === "meses";
+    var dataProxima = proximaData(i.repetir, contaDeHoje ? hojeISO() : i.dataLimite);
+    const prox = { ...resto, feito: false, criadoEm: agora(), dataLimite: dataProxima, dataSoMes: false, ultimaVez: hojeISO(), temFoto: false };
     gravar(setDoc(doc(db, "itens", proximaId), prox));
   }
   if (i.tipo === "pendencia" && marcar) {
-    mostrarAviso(proximaId ? `Concluída. A próxima ficou para ${ddmm(proximaData(i.repetir, i.dataLimite))}` : `"${i.titulo}" foi concluída`, () => {
+    mostrarAviso(proximaId ? `Concluída. A próxima ficou para ${dataCurta(dataProxima)}` : `"${i.titulo}" foi concluída`, () => {
       gravar(updateDoc(doc(db, "itens", id), { feito: false, feitoEm: null, feitoPor: null }));
       if (proximaId) gravar(deleteDoc(doc(db, "itens", proximaId)));
     });
@@ -397,13 +410,13 @@ function abrirForm(tipo, id) {
   const cats = categoriasOrdenadas();
   S.form = i ? {
     id: i.id, novo: false, tipo: i.tipo, titulo: i.titulo || "", comentario: i.comentario || "",
-    quemFaz: i.quemFaz || "qualquer", urgente: !!i.urgente, dataLimite: i.dataLimite || "",
+    quemFaz: i.quemFaz || "qualquer", urgente: !!i.urgente, dataLimite: i.dataLimite || "", dataSoMes: !!i.dataSoMes, ultimaVez: i.ultimaVez || "",
     repetir: i.repetir || { tipo: "nao" }, quantidade: i.quantidade || 1,
     categoriaId: i.categoriaId || (cats[0] && cats[0].id), temFoto: !!i.temFoto, fotoNova: null, fotoRemovida: false,
     compraId: i.compraId || null, compraTitulo: i.compraTitulo || "", compraStatus: i.compraStatus || "",
     precisaComprar: false, compraNova: "", compraCategoria: (cats[0] && cats[0].id), pendenciaId: i.pendenciaId || null,
   } : {
-    id: null, novo: true, tipo, titulo: "", comentario: "", quemFaz: eu(), urgente: false, dataLimite: "",
+    id: null, novo: true, tipo, titulo: "", comentario: "", quemFaz: eu(), urgente: false, dataLimite: "", dataSoMes: false, ultimaVez: "",
     repetir: { tipo: "nao" }, quantidade: 1,
     categoriaId: (categoria(ultimaCat) ? ultimaCat : cats[0] && cats[0].id), temFoto: false, fotoNova: null, fotoRemovida: false,
     compraId: null, compraTitulo: "", compraStatus: "", precisaComprar: false, compraNova: "",
@@ -424,7 +437,7 @@ function salvarForm() {
   if (f.tipo === "pendencia") {
     let data = f.dataLimite || null;
     if (f.repetir.tipo !== "nao" && !data) data = primeiraData(f.repetir);
-    dados = { ...base, quemFaz: f.quemFaz, urgente: f.urgente, dataLimite: data, repetir: f.repetir };
+    dados = { ...base, quemFaz: f.quemFaz, urgente: f.urgente, dataLimite: data, repetir: f.repetir, dataSoMes: !!(f.dataSoMes && data), ultimaVez: f.ultimaVez || null };
     if (f.precisaComprar && f.compraNova.trim()) {
       const compraId = novoId("itens");
       const tituloCompra = maiuscula(f.compraNova);
@@ -733,9 +746,15 @@ function listaPendencias(pend) {
 function seloData(i) {
   if (!i.dataLimite) return "";
   const h = hojeISO();
-  if (!i.feito && i.dataLimite < h) return `<span class="selo atrasada">Atrasada · ${ddmm(i.dataLimite)}</span>`;
+  if (i.dataSoMes) {
+    const mes = i.dataLimite.slice(0, 7), atual = h.slice(0, 7);
+    if (!i.feito && mes < atual) return `<span class="selo atrasada">Atrasada · ${mmaaaa(i.dataLimite)}</span>`;
+    if (!i.feito && mes === atual) return `<span class="selo urgente">Vence este mês</span>`;
+    return `<span class="selo">Até ${mmaaaa(i.dataLimite)}</span>`;
+  }
+  if (!i.feito && i.dataLimite < h) return `<span class="selo atrasada">Atrasada · ${dataCurta(i.dataLimite)}</span>`;
   if (!i.feito && i.dataLimite === h) return `<span class="selo urgente">Vence hoje</span>`;
-  return `<span class="selo">Até ${ddmm(i.dataLimite)}</span>`;
+  return `<span class="selo">Até ${dataCurta(i.dataLimite)}</span>`;
 }
 
 function cardPendencia(i) {
@@ -752,6 +771,7 @@ function cardPendencia(i) {
       <button class="circulo ${i.feito ? "feito" : ""}" data-acao="feito" data-id="${i.id}" aria-label="${i.feito ? "Marcar como não feita" : "Marcar como feita"}">${i.feito ? ic("check", 16, "#fff", 3) : ""}</button>
       <button class="card-corpo" data-acao="editar" data-id="${i.id}">
         <span class="card-titulo ${i.feito ? "feito" : ""}">${esc(i.titulo)}</span>
+        ${i.ultimaVez && i.repetir && i.repetir.tipo !== "nao" ? `<span class="sub" style="font-size:13px">Última vez: ${textoUltimaVez(i.ultimaVez)}</span>` : ""}
         ${i.comentario ? `<span class="card-coment">${ic("balao", 15, "#5F6368")}<span>${esc(i.comentario)}</span></span>` : ""}
         ${compra}
         <span class="selos">
@@ -883,7 +903,9 @@ function paginaForm() {
       </div>
       <div class="campo"><label for="campo-data">Data limite (opcional)</label>
         <div class="data-linha">
-          <input id="campo-data" class="entrada" type="date" data-campo="dataLimite" value="${esc(f.dataLimite)}">
+          ${f.dataSoMes && f.dataLimite
+            ? `<span class="entrada" style="display:flex;align-items:center;background:var(--fundo-3)">${maiuscula(MESES[Number(f.dataLimite.slice(5, 7)) - 1])}/${f.dataLimite.slice(0, 4)} <small style="color:var(--cinza);margin-left:6px">(pela última vez)</small></span>`
+            : `<input id="campo-data" class="entrada" type="date" data-campo="dataLimite" value="${esc(f.dataLimite)}">`}
           ${f.dataLimite ? `<button class="btn-icone" data-acao="limparData" aria-label="Tirar data">${ic("x", 18)}</button>` : ""}
         </div>
       </div>
@@ -1080,6 +1102,37 @@ function folhaLugares() {
     <button class="btn-principal largo" data-acao="comecarCompras" ${total ? "" : "disabled"}>Começar · ${total} ${total === 1 ? "item" : "itens"}</button>`;
 }
 
+// "Última vez que foi feito": mês e ano, para tarefas que já existiam antes do Dory
+function calcularPelaUltima(r) {
+  if (r.ultMes === "" || r.ultMes === undefined || r.ultMes === null) return null;
+  const ult = new Date(Number(r.ultAno), Number(r.ultMes), 1);
+  const hoje = new Date();
+  if (ult > new Date(hoje.getFullYear(), hoje.getMonth(), 1)) return { erro: "Escolha um mês que já passou." };
+  return { proxima: isoDe(somarMeses(ult, r.cadaMeses, 1)), ultima: `${r.ultAno}-${String(Number(r.ultMes) + 1).padStart(2, "0")}` };
+}
+function blocoUltimaVez(r) {
+  const anoAtual = new Date().getFullYear();
+  const calc = calcularPelaUltima(r);
+  const atual = hojeISO().slice(0, 7);
+  return `<div class="campo" style="padding-left:6px">
+      <span class="rotulo">Última vez que foi feito (opcional)</span>
+      <div style="display:flex;gap:10px">
+        <label style="flex:1"><span class="sr">Mês</span>
+          <select class="entrada" data-repcampo="ultMes">
+            <option value="" ${r.ultMes === "" ? "selected" : ""}>Não informar</option>
+            ${MESES.map((m, k) => `<option value="${k}" ${String(r.ultMes) === String(k) ? "selected" : ""}>${m}</option>`).join("")}
+          </select></label>
+        <label style="width:110px"><span class="sr">Ano</span>
+          <select class="entrada" data-repcampo="ultAno">
+            ${[0, 1, 2, 3].map(k => `<option value="${anoAtual - k}" ${String(r.ultAno) === String(anoAtual - k) ? "selected" : ""}>${anoAtual - k}</option>`).join("")}
+          </select></label>
+      </div>
+      ${calc && calc.erro ? `<span class="erro" style="max-width:none">${calc.erro}</span>` : ""}
+      ${calc && calc.proxima ? `<div class="caixa-compra" style="flex-direction:row;align-items:center;gap:10px">${ic("calendario", 20)}
+        <span style="font-size:15px">Próxima vez: <b>${MESES[Number(calc.proxima.slice(5, 7)) - 1]}/${calc.proxima.slice(0, 4)}</b>${calc.proxima.slice(0, 7) < atual ? " — já passou, vai aparecer como atrasada" : ""}</span></div>` : ""}
+    </div>`;
+}
+
 function folhaRepetir() {
   const r = S.folha.rep;
   const op = (tipo, nome, extra = "") => `<button class="opcao ${r.tipo === tipo ? "ativo" : ""}" style="min-height:52px" data-acao="tipoRepetir" data-valor="${tipo}"><span class="radio"></span><span class="nome" style="font-size:16px">${nome}</span>${extra}</button>`;
@@ -1091,10 +1144,13 @@ function folhaRepetir() {
     ${op("mes", "Todo mês")}
     ${r.tipo === "mes" ? `<div style="display:flex;align-items:center;gap:10px;padding-left:6px"><span>No dia</span>
       <div class="contador pequeno"><button data-acao="diaMes" data-valor="-1" aria-label="Dia anterior">−</button><span>${r.diaMes}</span><button data-acao="diaMes" data-valor="1" aria-label="Próximo dia">+</button></div></div>` : ""}
-    ${op("meses", "A cada alguns meses", `<span class="conta">ex.: filtro de água</span>`)}
+    ${op("meses", "A cada alguns meses", r.tipo === "meses" ? "" : `<span class="conta">ex.: filtro de água</span>`)}
     ${r.tipo === "meses" ? `<div style="display:flex;align-items:center;gap:10px;padding-left:6px"><span>A cada</span>
-      <div class="contador pequeno"><button data-acao="cadaMeses" data-valor="-1" aria-label="Menos meses">−</button><span>${r.cadaMeses}</span><button data-acao="cadaMeses" data-valor="1" aria-label="Mais meses">+</button></div><span>meses</span></div>` : ""}
-    <div class="dica">${ic("info", 18, "#5F6368")}<span>Quando vocês marcarem como feita, o Dory cria sozinho a próxima, já com a nova data.</span></div>
+      <div class="contador pequeno"><button data-acao="cadaMeses" data-valor="-1" aria-label="Menos meses">−</button><span>${r.cadaMeses}</span><button data-acao="cadaMeses" data-valor="1" aria-label="Mais meses">+</button></div><span>meses</span></div>
+      ${blocoUltimaVez(r)}` : ""}
+    <div class="dica">${ic("info", 18, "#5F6368")}<span>${r.tipo === "meses" || r.tipo === "dia"
+      ? "Quando vocês marcarem como feita, a próxima é contada a partir do dia em que foi feita. Ex.: a cada 6 meses, trocou em março → próxima em setembro."
+      : "Quando vocês marcarem como feita, o Dory cria sozinho a próxima, seguindo o calendário."}</span></div>
     <button class="btn-principal largo" data-acao="okRepetir">Pronto</button>`;
 }
 
@@ -1166,7 +1222,7 @@ const acoes = {
   tipoForm: el => { S.form.tipo = el.dataset.valor; desenharSobre(); },
   quemFaz: el => { S.form.quemFaz = el.dataset.valor; desenharSobre(); },
   urgente: el => { S.form.urgente = el.dataset.valor === "1"; desenharSobre(); },
-  limparData: () => { S.form.dataLimite = ""; desenharSobre(); },
+  limparData: () => { S.form.dataLimite = ""; S.form.dataSoMes = false; desenharSobre(); },
   qtd: el => { S.form.quantidade = Math.max(1, Math.min(99, S.form.quantidade + Number(el.dataset.valor))); desenharSobre(); },
   lugarForm: el => { S.form.categoriaId = el.dataset.valor; desenharSobre(); },
   lugarCompraForm: el => { S.form.compraCategoria = el.dataset.valor; desenharSobre(); },
@@ -1183,7 +1239,9 @@ const acoes = {
   abrirRepetir: () => {
     const r = S.form.repetir || { tipo: "nao" };
     const base = S.form.dataLimite ? dataDe(S.form.dataLimite) : new Date();
-    S.folha = { tipo: "repetir", rep: { tipo: r.tipo, diaSemana: r.diaSemana ?? base.getDay(), diaMes: r.diaMes ?? base.getDate(), cadaMeses: r.cadaMeses ?? 6 } };
+    const u = /^\d{4}-\d{2}$/.test(S.form.ultimaVez || "") ? S.form.ultimaVez.split("-") : null;
+    S.folha = { tipo: "repetir", rep: { tipo: r.tipo, diaSemana: r.diaSemana ?? base.getDay(), diaMes: r.diaMes ?? base.getDate(), cadaMeses: r.cadaMeses ?? 6,
+      ultMes: u ? String(Number(u[1]) - 1) : "", ultAno: u ? u[0] : String(new Date().getFullYear()) } };
     desenharFolha();
   },
   tipoRepetir: el => { S.folha.rep.tipo = el.dataset.valor; desenharFolha(); },
@@ -1194,7 +1252,14 @@ const acoes = {
     const r = S.folha.rep;
     const rep = r.tipo === "nao" ? { tipo: "nao" } : r.tipo === "dia" ? { tipo: "dia" } : r.tipo === "semana" ? { tipo: "semana", diaSemana: r.diaSemana } : r.tipo === "mes" ? { tipo: "mes", diaMes: r.diaMes } : { tipo: "meses", cadaMeses: r.cadaMeses };
     S.form.repetir = rep;
-    if (rep.tipo !== "nao" && !S.form.dataLimite) S.form.dataLimite = primeiraData(rep);
+    const calc = rep.tipo === "meses" ? calcularPelaUltima(r) : null;
+    if (calc && calc.erro) return; // mês no futuro: a mensagem já está na tela
+    if (calc && calc.proxima) {
+      S.form.ultimaVez = calc.ultima; S.form.dataLimite = calc.proxima; S.form.dataSoMes = true;
+    } else {
+      if (/^\d{4}-\d{2}$/.test(S.form.ultimaVez || "")) { S.form.ultimaVez = ""; if (S.form.dataSoMes) { S.form.dataLimite = ""; S.form.dataSoMes = false; } }
+      if (rep.tipo !== "nao" && !S.form.dataLimite) S.form.dataLimite = primeiraData(rep);
+    }
     S.folha = null; desenharFolha(); desenharSobre();
   },
   // lugares
@@ -1257,7 +1322,8 @@ document.addEventListener("input", ev => {
 });
 document.addEventListener("change", async ev => {
   const el = ev.target;
-  if (el.dataset.campo === "dataLimite" && S.form) { S.form.dataLimite = el.value; desenharSobre(); }
+  if (el.dataset.campo === "dataLimite" && S.form) { S.form.dataLimite = el.value; S.form.dataSoMes = false; desenharSobre(); }
+  if (el.dataset.repcampo && S.folha && S.folha.rep) { S.folha.rep[el.dataset.repcampo] = el.value; desenharFolha(); }
   if (el.hasAttribute("data-foto") && el.files && el.files[0] && S.form) {
     try { S.form.fotoNova = await reduzirFoto(el.files[0]); S.form.fotoRemovida = false; desenharSobre(); }
     catch (e) { mostrarAviso("Não consegui abrir essa foto."); }

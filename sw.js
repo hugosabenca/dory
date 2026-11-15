@@ -1,7 +1,7 @@
 // Dory — "service worker": guarda os arquivos do app no celular
 // para ele abrir mesmo sem internet.
 // Sempre que mudar algum arquivo do app, aumente o número da versão abaixo.
-const VERSAO = "dory-v2";
+const VERSAO = "dory-v3";
 const ARQUIVOS = ["./", "index.html", "estilo.css", "app.js", "manifest.json", "icone-192.png", "icone-512.png", "icone-mascara-512.png"];
 
 self.addEventListener("install", ev => {
